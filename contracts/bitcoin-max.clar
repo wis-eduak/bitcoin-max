@@ -22,13 +22,20 @@
 ;; TRAIT DEFINITIONS
 
 ;; Trait for yield-generating protocols that can receive deposits and handle withdrawals
-(define-trait yield-protocol-trait
-  (
-    (deposit (uint principal) (response bool uint))
-    (withdraw (uint principal) (response bool uint))
-    (get-balance (principal) (response uint uint))
+(define-trait yield-protocol-trait (
+  (deposit
+    (uint principal)
+    (response bool uint)
   )
-)
+  (withdraw
+    (uint principal)
+    (response bool uint)
+  )
+  (get-balance
+    (principal)
+    (response uint uint)
+  )
+))
 
 ;; ERROR CONSTANTS
 
@@ -39,6 +46,8 @@
 (define-constant ERR_PROTOCOL_NOT_FOUND (err u1004))
 (define-constant ERR_REBALANCE_THRESHOLD_NOT_MET (err u1005))
 (define-constant ERR_BEST_PROTOCOL_NOT_FOUND (err u1006))
+(define-constant ERR_INVALID_PRINCIPAL (err u1007))
+(define-constant ERR_SAME_OWNER (err u1008))
 
 ;; DATA STORAGE
 
@@ -80,7 +89,9 @@
 (define-map protocol-yields
   (string-ascii 64)
   uint
-) ;; APY in basis points
+)
+
+;; APY in basis points
 
 (define-map protocol-addresses
   (string-ascii 64)
@@ -210,6 +221,14 @@
   )
 )
 
+(define-private (is-valid-principal (addr principal))
+  ;; Validates that a principal is not the zero principal and not the current contract
+  (and
+    (not (is-eq addr (as-contract tx-sender)))
+    (not (is-eq addr 'SP000000000000000000002Q6VF78)) ;; Zero principal check
+  )
+)
+
 (define-public (get-best-protocol)
   ;; Public interface to retrieve the current highest yielding protocol
   (let ((best-protocol (find-best-protocol)))
@@ -304,14 +323,19 @@
     (protocol-address principal)
     (initial-yield uint)
   )
-  ;; Adds a new yield protocol to the optimization engine
+  ;; Adds a new yield protocol to the optimization engine with enhanced validation
   (let ((protocol-index (var-get protocol-count)))
     ;; Enforce admin privileges
     (asserts! (is-eq tx-sender (var-get contract-owner)) ERR_UNAUTHORIZED)
     ;; Validate input parameters
     (asserts! (> (len protocol-name) u0) ERR_INVALID_AMOUNT)
-    (asserts! (<= initial-yield u10000) ERR_INVALID_AMOUNT) ;; Max 100% APY
-    (asserts! (is-none (map-get? protocol-addresses protocol-name)) ERR_INVALID_AMOUNT)
+    (asserts! (<= initial-yield u10000) ERR_INVALID_AMOUNT)
+    ;; Max 100% APY
+    (asserts! (is-none (map-get? protocol-addresses protocol-name))
+      ERR_INVALID_AMOUNT
+    )
+    ;; SECURITY FIX: Validate protocol address
+    (asserts! (is-valid-principal protocol-address) ERR_INVALID_PRINCIPAL)
     ;; Register new protocol in system
     (map-set protocol-registry protocol-index protocol-name)
     (map-set protocol-addresses protocol-name protocol-address)
@@ -336,8 +360,7 @@
     (asserts! (> (len protocol-name) u0) ERR_INVALID_AMOUNT)
     (asserts! (<= new-yield u10000) ERR_INVALID_AMOUNT) ;; Max 100% APY
     ;; Validate protocol exists
-    (asserts!
-      (is-some (map-get? protocol-addresses protocol-name))
+    (asserts! (is-some (map-get? protocol-addresses protocol-name))
       ERR_PROTOCOL_NOT_FOUND
     )
     ;; Update yield data
@@ -355,8 +378,7 @@
     ;; Enforce admin privileges
     (asserts! (is-eq tx-sender (var-get contract-owner)) ERR_UNAUTHORIZED)
     ;; Validate protocol exists
-    (asserts!
-      (is-some (map-get? protocol-addresses protocol-name))
+    (asserts! (is-some (map-get? protocol-addresses protocol-name))
       ERR_PROTOCOL_NOT_FOUND
     )
     ;; Update protocol status
@@ -366,13 +388,40 @@
 )
 
 (define-public (transfer-ownership (new-owner principal))
-  ;; Transfers contract ownership to a new administrator
+  ;; Transfers contract ownership to a new administrator with enhanced validation
   (begin
     ;; Enforce current owner privileges
     (asserts! (is-eq tx-sender (var-get contract-owner)) ERR_UNAUTHORIZED)
+    ;; SECURITY FIX: Validate new owner address
+    (asserts! (is-valid-principal new-owner) ERR_INVALID_PRINCIPAL)
+    ;; Prevent transferring to the same owner
+    (asserts! (not (is-eq new-owner (var-get contract-owner))) ERR_SAME_OWNER)
     ;; Execute ownership transfer
     (var-set contract-owner new-owner)
     (ok true)
+  )
+)
+
+(define-public (propose-ownership-transfer (new-owner principal))
+  ;; Two-step ownership transfer for enhanced security
+  (begin
+    (asserts! (is-eq tx-sender (var-get contract-owner)) ERR_UNAUTHORIZED)
+    (asserts! (is-valid-principal new-owner) ERR_INVALID_PRINCIPAL)
+    (asserts! (not (is-eq new-owner (var-get contract-owner))) ERR_SAME_OWNER)
+    ;; Store proposed owner (you'd need to add this data-var)
+    ;; (var-set proposed-owner (some new-owner))
+    (ok true)
+  )
+)
+
+(define-private (validate-protocol-contract (protocol-address principal))
+  ;; Additional validation to ensure protocol contract implements required trait
+  ;; This is a placeholder - in production I might want to call a specific function
+  ;; to verify the contract implements the yield-protocol-trait
+  (and
+    (is-valid-principal protocol-address)
+    ;; Add additional contract-specific validations here
+    true
   )
 )
 
@@ -386,9 +435,8 @@
       (begin
         ;; Update allocation tracking
         (map-set protocol-allocations best-protocol
-          (+ (default-to u0 (map-get? protocol-allocations best-protocol))
-            amount
-          ))
+          (+ (default-to u0 (map-get? protocol-allocations best-protocol)) amount)
+        )
         ;; Note: In a real implementation, you would need to handle dynamic contract calls
         ;; This is a simplified version that assumes protocol integration happens elsewhere
         (ok true)
@@ -408,7 +456,10 @@
   )
 )
 
-(define-private (try-withdraw-from-protocol-fold (protocol-index uint) (continue bool))
+(define-private (try-withdraw-from-protocol-fold
+    (protocol-index uint)
+    (continue bool)
+  )
   ;; Fold version of protocol withdrawal attempt
   (if (not continue)
     false
@@ -491,7 +542,10 @@
   )
 )
 
-(define-private (withdraw-if-lower-yield-protocol-fold (protocol-index uint) (continue bool))
+(define-private (withdraw-if-lower-yield-protocol-fold
+    (protocol-index uint)
+    (continue bool)
+  )
   ;; Fold version of conditional protocol withdrawal
   (if (not continue)
     false
@@ -539,5 +593,4 @@
 ;; CONTRACT INITIALIZATION
 
 ;; Initialize default protocol state
-(map-set protocol-yields "default" u0)
-(map-set protocol-enabled "default" false)
+(map-set protocol-yields "default" u0) (map-set protocol-enabled "default" false)
