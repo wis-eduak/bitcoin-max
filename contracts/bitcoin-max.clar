@@ -308,6 +308,10 @@
   (let ((protocol-index (var-get protocol-count)))
     ;; Enforce admin privileges
     (asserts! (is-eq tx-sender (var-get contract-owner)) ERR_UNAUTHORIZED)
+    ;; Validate input parameters
+    (asserts! (> (len protocol-name) u0) ERR_INVALID_AMOUNT)
+    (asserts! (<= initial-yield u10000) ERR_INVALID_AMOUNT) ;; Max 100% APY
+    (asserts! (is-none (map-get? protocol-addresses protocol-name)) ERR_INVALID_AMOUNT)
     ;; Register new protocol in system
     (map-set protocol-registry protocol-index protocol-name)
     (map-set protocol-addresses protocol-name protocol-address)
@@ -328,6 +332,9 @@
   (begin
     ;; Enforce admin privileges
     (asserts! (is-eq tx-sender (var-get contract-owner)) ERR_UNAUTHORIZED)
+    ;; Validate input parameters
+    (asserts! (> (len protocol-name) u0) ERR_INVALID_AMOUNT)
+    (asserts! (<= new-yield u10000) ERR_INVALID_AMOUNT) ;; Max 100% APY
     ;; Validate protocol exists
     (asserts!
       (is-some (map-get? protocol-addresses protocol-name))
