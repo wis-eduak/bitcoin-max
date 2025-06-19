@@ -197,3 +197,112 @@
     )
   )
 )
+
+(define-public (get-best-protocol)
+  ;; Public interface to retrieve the current highest yielding protocol
+  (let ((best-protocol (find-best-protocol)))
+    (var-set best-protocol-name (get best-name best-protocol))
+    (var-set best-protocol-yield (get best-yield best-protocol))
+    (ok (get best-name best-protocol))
+  )
+)
+
+;; CORE USER FUNCTIONS
+
+(define-public (deposit (amount uint))
+  ;; Deposits Bitcoin into the yield optimizer and mints corresponding shares
+  (let (
+      (sender tx-sender)
+      (current-deposit (default-to u0 (map-get? user-deposits sender)))
+      (share-amount (calculate-shares-amount amount))
+    )
+    ;; Validate deposit amount
+    (asserts! (> amount u0) ERR_INVALID_AMOUNT)
+    ;; Execute Bitcoin transfer from user to contract
+    (asserts!
+      (is-ok (contract-call? 'SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token
+        transfer amount sender (as-contract tx-sender) none
+      ))
+      ERR_TRANSFER_FAILED
+    )
+    ;; Update user account balances
+    (map-set user-deposits sender (+ current-deposit amount))
+    (map-set user-shares sender
+      (+ (default-to u0 (map-get? user-shares sender)) share-amount)
+    )
+    ;; Update global protocol state
+    (var-set total-deposits (+ (var-get total-deposits) amount))
+    (var-set total-shares (+ (var-get total-shares) share-amount))
+    ;; Execute intelligent allocation to optimal protocol
+    (try! (allocate-deposit amount))
+    (ok share-amount)
+  )
+)
+
+(define-public (withdraw (share-amount uint))
+  ;; Burns shares and withdraws corresponding Bitcoin amount
+  (let (
+      (sender tx-sender)
+      (user-share-balance (default-to u0 (map-get? user-shares sender)))
+      (withdrawal-amount (calculate-withdrawal-amount share-amount))
+    )
+    ;; Validate sufficient share balance
+    (asserts! (>= user-share-balance share-amount) ERR_INSUFFICIENT_BALANCE)
+    ;; Update user share balance
+    (map-set user-shares sender (- user-share-balance share-amount))
+    (var-set total-shares (- (var-get total-shares) share-amount))
+    ;; Execute withdrawal from protocols
+    (try! (withdraw-from-protocols withdrawal-amount))
+    ;; Update user and global deposit tracking
+    (map-set user-deposits sender
+      (- (default-to u0 (map-get? user-deposits sender)) withdrawal-amount)
+    )
+    (var-set total-deposits (- (var-get total-deposits) withdrawal-amount))
+    ;; Transfer Bitcoin back to user
+    (as-contract (contract-call? 'SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token
+      transfer withdrawal-amount tx-sender sender none
+    ))
+  )
+)
+
+;; AUTOMATED REBALANCING SYSTEM
+
+(define-public (rebalance)
+  ;; Triggers intelligent rebalancing of funds across protocols for optimal yield
+  (begin
+    ;; Enforce minimum rebalancing interval (100 blocks)
+    (asserts! (> (- stacks-block-height (var-get last-rebalance-block)) u100)
+      ERR_REBALANCE_THRESHOLD_NOT_MET
+    )
+    ;; Update rebalancing timestamp
+    (var-set last-rebalance-block stacks-block-height)
+    ;; Identify optimal protocol for rebalancing
+    (try! (get-best-protocol))
+    ;; Execute rebalancing strategy
+    (try! (perform-rebalance (var-get best-protocol-name)))
+    (ok true)
+  )
+)
+
+;; PROTOCOL ADMINISTRATION
+
+(define-public (add-protocol
+    (protocol-name (string-ascii 64))
+    (protocol-address principal)
+    (initial-yield uint)
+  )
+  ;; Adds a new yield protocol to the optimization engine
+  (let ((protocol-index (var-get protocol-count)))
+    ;; Enforce admin privileges
+    (asserts! (is-eq tx-sender (var-get contract-owner)) ERR_UNAUTHORIZED)
+    ;; Register new protocol in system
+    (map-set protocol-registry protocol-index protocol-name)
+    (map-set protocol-addresses protocol-name protocol-address)
+    (map-set protocol-yields protocol-name initial-yield)
+    (map-set protocol-enabled protocol-name true)
+    (map-set protocol-allocations protocol-name u0)
+    ;; Update protocol counter
+    (var-set protocol-count (+ protocol-index u1))
+    (ok true)
+  )
+)
