@@ -448,3 +448,112 @@
     )
   )
 )
+
+;; ADVANCED REBALANCING LOGIC
+
+(define-private (perform-rebalance (best-protocol (string-ascii 64)))
+  ;; Executes comprehensive rebalancing strategy for maximum yield optimization
+  (begin
+    (if (is-eq best-protocol "")
+      (ok true)
+      (let (
+          (best-protocol-address (unwrap! (map-get? protocol-addresses best-protocol)
+            ERR_PROTOCOL_NOT_FOUND
+          ))
+          (best-protocol-yield (default-to u0 (map-get? protocol-yields best-protocol)))
+        )
+        (let ((current-best-allocation (default-to u0 (map-get? protocol-allocations best-protocol))))
+          ;; Withdraw from suboptimal protocols
+          (try! (withdraw-from-lower-yield-protocols best-protocol best-protocol-yield))
+          ;; Reallocate all available funds to optimal protocol
+          (let ((available-balance (as-contract (contract-call? 'SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token
+              get-balance (as-contract tx-sender)
+            ))))
+            (if (> available-balance u0)
+              (as-contract (begin
+                ;; Deploy funds to optimal protocol
+                (try! (contract-call? best-protocol-address deposit available-balance
+                  (as-contract tx-sender)
+                ))
+                ;; Update allocation tracking
+                (map-set protocol-allocations best-protocol
+                  (+ current-best-allocation available-balance)
+                )
+                (ok true)
+              ))
+              (ok true)
+            )
+          )
+        )
+      )
+    )
+  )
+)
+
+(define-private (withdraw-from-lower-yield-protocols
+    (best-protocol (string-ascii 64))
+    (best-yield uint)
+  )
+  ;; Withdraws funds from protocols with yields below optimization threshold
+  (begin
+    (var-set rebalance-result (ok true))
+    ;; Evaluate each protocol for rebalancing opportunity
+    (map withdraw-if-lower-yield-protocol (list u0 u1 u2 u3 u4))
+    (var-get rebalance-result)
+  )
+)
+
+(define-private (withdraw-if-lower-yield-protocol (protocol-index uint))
+  ;; Conditionally withdraws from protocol if yield is suboptimal
+  (let ((current-result (var-get rebalance-result)))
+    (if (is-err current-result)
+      false
+      (let ((protocol-name (default-to "" (map-get? protocol-registry protocol-index))))
+        (if (or (is-eq protocol-name "") (is-eq protocol-name (var-get best-protocol-name)))
+          false
+          (let (
+              (protocol-yield (default-to u0 (map-get? protocol-yields protocol-name)))
+              (protocol-allocation (default-to u0 (map-get? protocol-allocations protocol-name)))
+              (yield-difference (- (var-get best-protocol-yield) protocol-yield))
+            )
+            ;; Execute withdrawal if threshold exceeded and allocation exists
+            (if (or (< yield-difference (var-get rebalance-threshold)) (<= protocol-allocation u0))
+              false
+              (let ((protocol-address-opt (map-get? protocol-addresses protocol-name)))
+                (if (is-none protocol-address-opt)
+                  (begin
+                    (var-set rebalance-result ERR_PROTOCOL_NOT_FOUND)
+                    false
+                  )
+                  (let ((protocol-address (unwrap-panic protocol-address-opt)))
+                    ;; Withdraw all funds from suboptimal protocol
+                    (let ((withdraw-result (as-contract (contract-call? protocol-address withdraw
+                        protocol-allocation (as-contract tx-sender)
+                      ))))
+                      (if (is-ok withdraw-result)
+                        (begin
+                          ;; Reset allocation to zero
+                          (map-set protocol-allocations protocol-name u0)
+                          true
+                        )
+                        (begin
+                          (var-set rebalance-result (err ERR_TRANSFER_FAILED))
+                          false
+                        )
+                      )
+                    )
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+)
+
+;; CONTRACT INITIALIZATION
+
+;; Initialize default protocol state
+(map-set protocol-yields "default" u0) (map-set protocol-enabled "default" false)
