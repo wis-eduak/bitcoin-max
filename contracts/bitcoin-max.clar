@@ -306,3 +306,145 @@
     (ok true)
   )
 )
+
+(define-public (update-protocol-yield
+    (protocol-name (string-ascii 64))
+    (new-yield uint)
+  )
+  ;; Updates yield information for optimal allocation decisions
+  (begin
+    ;; Enforce admin privileges
+    (asserts! (is-eq tx-sender (var-get contract-owner)) ERR_UNAUTHORIZED)
+    ;; Validate protocol exists
+    (asserts!
+      (not (is-eq (default-to none (map-get? protocol-addresses protocol-name)) none))
+      ERR_PROTOCOL_NOT_FOUND
+    )
+    ;; Update yield data
+    (map-set protocol-yields protocol-name new-yield)
+    (ok true)
+  )
+)
+
+(define-public (toggle-protocol
+    (protocol-name (string-ascii 64))
+    (enabled bool)
+  )
+  ;; Enables or disables a protocol for yield optimization
+  (begin
+    ;; Enforce admin privileges
+    (asserts! (is-eq tx-sender (var-get contract-owner)) ERR_UNAUTHORIZED)
+    ;; Validate protocol exists
+    (asserts!
+      (not (is-eq (default-to none (map-get? protocol-addresses protocol-name)) none))
+      ERR_PROTOCOL_NOT_FOUND
+    )
+    ;; Update protocol status
+    (map-set protocol-enabled protocol-name enabled)
+    (ok true)
+  )
+)
+
+(define-public (transfer-ownership (new-owner principal))
+  ;; Transfers contract ownership to a new administrator
+  (begin
+    ;; Enforce current owner privileges
+    (asserts! (is-eq tx-sender (var-get contract-owner)) ERR_UNAUTHORIZED)
+    ;; Execute ownership transfer
+    (var-set contract-owner new-owner)
+    (ok true)
+  )
+)
+
+;; INTERNAL ALLOCATION LOGIC
+
+(define-private (allocate-deposit (amount uint))
+  ;; Intelligently allocates new deposits to the highest yielding protocol
+  (begin
+    ;; Identify optimal protocol
+    (try! (get-best-protocol))
+    (let ((best-protocol (var-get best-protocol-name)))
+      (if (is-eq best-protocol "")
+        (ok true) ;; Hold in contract if no protocols available
+        (let ((protocol-address (unwrap! (map-get? protocol-addresses best-protocol)
+            ERR_PROTOCOL_NOT_FOUND
+          )))
+          ;; Update allocation tracking
+          (map-set protocol-allocations best-protocol
+            (+ (default-to u0 (map-get? protocol-allocations best-protocol))
+              amount
+            ))
+          ;; Execute deposit to optimal protocol
+          (as-contract (try! (contract-call? protocol-address deposit amount (as-contract tx-sender))))
+          (ok true)
+        )
+      )
+    )
+  )
+)
+
+(define-private (withdraw-from-protocols (amount uint))
+  ;; Strategically withdraws funds from protocols based on current allocations
+  (begin
+    (var-set remaining-amount amount)
+    (var-set withdrawal-result (ok true))
+    ;; Attempt withdrawal from each protocol until amount satisfied
+    (map try-withdraw-from-protocol (list u0 u1 u2 u3 u4))
+    (var-get withdrawal-result)
+  )
+)
+
+(define-private (try-withdraw-from-protocol (protocol-index uint))
+  ;; Attempts to withdraw from a specific protocol if funds are allocated
+  (let (
+      (remaining (var-get remaining-amount))
+      (current-result (var-get withdrawal-result))
+    )
+    (if (or (<= remaining u0) (is-err current-result))
+      false
+      (let ((protocol-name (default-to "" (map-get? protocol-registry protocol-index))))
+        (if (is-eq protocol-name "")
+          false
+          (let (
+              (protocol-allocation (default-to u0 (map-get? protocol-allocations protocol-name)))
+              (protocol-address-opt (map-get? protocol-addresses protocol-name))
+            )
+            (if (or (<= protocol-allocation u0) (is-none protocol-address-opt))
+              false
+              (let ((protocol-address (unwrap! protocol-address-opt
+                  (begin
+                    (var-set withdrawal-result ERR_PROTOCOL_NOT_FOUND)
+                    false
+                  ))))
+                (let ((withdrawal-amount (if (< remaining protocol-allocation)
+                    remaining
+                    protocol-allocation
+                  )))
+                  ;; Execute protocol withdrawal
+                  (let ((withdraw-result (as-contract (contract-call? protocol-address withdraw withdrawal-amount
+                      (as-contract tx-sender)
+                    ))))
+                    (if (is-ok withdraw-result)
+                      (begin
+                        ;; Update allocation tracking
+                        (map-set protocol-allocations protocol-name
+                          (- protocol-allocation withdrawal-amount)
+                        )
+                        (var-set remaining-amount (- remaining withdrawal-amount))
+                        true
+                      )
+                      (begin
+                        (var-set withdrawal-result ERR_TRANSFER_FAILED)
+                        false
+                      )
+                    )
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+)
