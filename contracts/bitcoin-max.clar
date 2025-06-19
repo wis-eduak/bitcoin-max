@@ -96,3 +96,104 @@
   ;; Returns the total shares owned by a specific user
   (default-to u0 (map-get? user-shares user))
 )
+
+;; READ-ONLY FUNCTIONS - PROTOCOL QUERIES
+
+(define-read-only (get-protocol-allocation (protocol-name (string-ascii 64)))
+  ;; Returns the current allocation amount for a specific protocol
+  (default-to u0 (map-get? protocol-allocations protocol-name))
+)
+
+(define-read-only (get-protocol-yield (protocol-name (string-ascii 64)))
+  ;; Returns the current yield rate for a specific protocol in basis points
+  (default-to u0 (map-get? protocol-yields protocol-name))
+)
+
+;; READ-ONLY FUNCTIONS - GLOBAL STATE
+
+(define-read-only (get-total-deposits)
+  ;; Returns the total Bitcoin deposits across all users
+  (var-get total-deposits)
+)
+
+(define-read-only (get-total-shares)
+  ;; Returns the total shares in circulation
+  (var-get total-shares)
+)
+
+(define-read-only (get-share-value)
+  ;; Calculates the current value of one share with 6 decimal precision
+  (let (
+      (total-shares-value (var-get total-shares))
+      (total-deposits-value (var-get total-deposits))
+    )
+    (if (is-eq total-shares-value u0)
+      u1000000 ;; Initial share price: 1.0 with 6 decimal places
+      (/ (* total-deposits-value u1000000) total-shares-value)
+    )
+  )
+)
+
+;; READ-ONLY FUNCTIONS - SHARE CALCULATIONS
+
+(define-read-only (calculate-shares-amount (deposit-amount uint))
+  ;; Converts a Bitcoin deposit amount to equivalent shares
+  (let ((share-price (get-share-value)))
+    (if (is-eq share-price u0)
+      deposit-amount
+      (/ (* deposit-amount u1000000) share-price)
+    )
+  )
+)
+
+(define-read-only (calculate-withdrawal-amount (share-amount uint))
+  ;; Converts shares to equivalent Bitcoin withdrawal amount
+  (let ((share-price (get-share-value)))
+    (/ (* share-amount share-price) u1000000)
+  )
+)
+
+;; YIELD OPTIMIZATION ENGINE
+
+(define-private (find-best-protocol)
+  ;; Analyzes all active protocols and identifies the highest yielding option
+  (begin
+    ;; Initialize optimization variables
+    (var-set best-protocol-name "")
+    (var-set best-protocol-yield u0)
+    ;; Scan all registered protocols
+    (check-protocol-index u0)
+    (check-protocol-index u1)
+    (check-protocol-index u2)
+    (check-protocol-index u3)
+    (check-protocol-index u4)
+    ;; Return optimization results
+    {
+      best-name: (var-get best-protocol-name),
+      best-yield: (var-get best-protocol-yield),
+    }
+  )
+)
+
+(define-private (check-protocol-index (protocol-index uint))
+  ;; Evaluates a protocol at given index and updates best if superior yield found
+  (let ((protocol-name (default-to "" (map-get? protocol-registry protocol-index))))
+    (if (not (is-eq protocol-name ""))
+      (let (
+          (protocol-yield (default-to u0 (map-get? protocol-yields protocol-name)))
+          (protocol-active (default-to false (map-get? protocol-enabled protocol-name)))
+          (current-best-yield (var-get best-protocol-yield))
+        )
+        (if (and protocol-active (> protocol-yield current-best-yield))
+          (begin
+            (var-set best-protocol-name protocol-name)
+            (var-set best-protocol-yield protocol-yield)
+            true
+          )
+          false
+        )
+      )
+      false
+    )
+  )
+)
